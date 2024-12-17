@@ -1,21 +1,12 @@
+const mongoose = require('mongoose');
+const Joi = require('joi'); // Import Joi for validation
 const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
-const Task = require('../models/Task');
-const Joi = require('joi');
+const { Task, validateTask } = require('../models/Task'); // Import Task model and validation
 require('dotenv').config();
 
 const jwtSecret = process.env.sauce; // Secret key for JWT authentication
-
-// Validation schema for task inputs using Joi
-const taskValidationSchema = Joi.object({
-    task: Joi.string().required(), // Task name is required
-    desc: Joi.string().optional(), // Optional description
-    start: Joi.date().required(), // Start date is required
-    finish: Joi.date().greater(Joi.ref('start')).required(), // Finish date must be later than start date
-    color: Joi.string().optional().default('#000000'), // Optional color with a default value
-    status: Joi.string().valid('Todo', 'In Progress', 'Done').required(), // Valid statuses for a task
-});
 
 // Middleware to verify the token for authentication
 const verifyToken = (req, res, next) => {
@@ -48,7 +39,7 @@ const verifyToken = (req, res, next) => {
 // Route to create a new task
 router.post('/task', verifyToken, async (req, res) => {
     console.log('Received request to create a new task.');
-    const { error, value } = taskValidationSchema.validate(req.body);
+    const { error, value } = validateTask(req.body);
 
     if (error) {
         console.error(`Validation error while creating task: ${error.details[0].message}`);
@@ -70,12 +61,11 @@ router.post('/task', verifyToken, async (req, res) => {
     }
 });
 
-// Route to fetch all tasks for the logged-in user
+// Route to fetch all tasks for the logged-in user, sorted by priority
 router.get('/tasks', verifyToken, async (req, res) => {
     console.log(`Fetching tasks for user ID: ${req.userId}`);
     let { page = 1, limit = 10 } = req.query; // Pagination parameters
 
-    // Validate and convert pagination parameters to integers
     page = parseInt(page);
     limit = parseInt(limit);
 
@@ -84,11 +74,11 @@ router.get('/tasks', verifyToken, async (req, res) => {
 
     try {
         const tasks = await Task.find({ creator: req.userId })
-            .skip((page - 1) * limit) // Skip records for pagination
-            .limit(limit); // Limit the number of records returned
+            .sort({ priority: -1, created_at: -1 })
+            .skip((page - 1) * limit)
+            .limit(limit);
 
-        const totalTasks = await Task.countDocuments({ creator: req.userId }); // Count the total number of tasks
-
+        const totalTasks = await Task.countDocuments({ creator: req.userId });
         console.log(`Fetched ${tasks.length} tasks out of ${totalTasks} for user ID: ${req.userId}`);
         res.status(200).json({
             tasks,
@@ -103,30 +93,85 @@ router.get('/tasks', verifyToken, async (req, res) => {
     }
 });
 
-// Route to update a task
-router.put('/task/:id', verifyToken, async (req, res) => {
-    const { id } = req.params; // Extract task ID from request parameters
-    console.log(`Request to update task ID: ${id}`);
-    const { error, value } = taskValidationSchema.validate(req.body, { allowUnknown: true }); // Validate inputs
+// Route to create a subtask
+router.post('/task/:id/subtask', verifyToken, async (req, res) => {
+    const { id } = req.params;
+    console.log(`Request to create subtask for parent task ID: ${id}`);
+    const { error, value } = validateTask(req.body);
 
     if (error) {
-        console.error(`Validation error while updating task ID ${id}: ${error.details[0].message}`);
+        console.error(`Validation error while creating subtask: ${error.details[0].message}`);
+        return res.status(400).json({ message: `Validation error: ${error.details[0].message}` });
+    }
+
+    try {
+        const parentTask = await Task.findById(id);
+        if (!parentTask) {
+            console.error(`Parent task ID ${id} not found.`);
+            return res.status(404).json({ message: 'Parent task not found' });
+        }
+
+        const subtask = new Task({
+            ...value,
+            creator: req.userId,
+        });
+        const savedSubtask = await subtask.save();
+
+        parentTask.subtasks.push(savedSubtask._id);
+        await parentTask.save();
+
+        console.log(`Subtask '${savedSubtask.task}' created and added to parent task ID: ${id}`);
+        res.status(200).json({ message: 'Subtask created successfully', subtask: savedSubtask });
+    } catch (error) {
+        console.error('Error creating subtask:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Route to fetch subtasks for a specific task
+router.get('/task/:id/subtasks', verifyToken, async (req, res) => {
+    const { id } = req.params;
+    console.log(`Fetching subtasks for parent task ID: ${id}`);
+
+    try {
+        const task = await Task.findById(id).populate('subtasks');
+        if (!task) {
+            console.error(`Task ID ${id} not found.`);
+            return res.status(404).json({ message: 'Task not found' });
+        }
+
+        console.log(`Fetched ${task.subtasks.length} subtasks for task ID: ${id}`);
+        res.status(200).json({ subtasks: task.subtasks });
+    } catch (error) {
+        console.error('Error fetching subtasks:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Route to update a task
+router.put('/task/:id', verifyToken, async (req, res) => {
+    const { id } = req.params;
+    console.log(`Request to update task ID: ${id}`);
+
+    const { error, value } = validateTask(req.body);
+    if (error) {
+        console.error(`Validation error: ${error.details[0].message}`);
         return res.status(400).json({ message: `Validation error: ${error.details[0].message}` });
     }
 
     try {
         const updatedTask = await Task.findOneAndUpdate(
-            { _id: id, creator: req.userId }, // Match task by ID and user ID
-            value, // Apply the validated updates
-            { new: true } // Return the updated task
+            { _id: id, creator: req.userId },
+            value,
+            { new: true }
         );
 
         if (!updatedTask) {
-            console.error(`Task ID ${id} not found or unauthorized for user ID: ${req.userId}`);
+            console.error(`Task not found or unauthorized: ${id}`);
             return res.status(404).json({ message: 'Task not found or unauthorized' });
         }
 
-        console.log(`Task ID ${id} updated successfully for user ID: ${req.userId}`);
+        console.log(`Task ID ${id} updated successfully.`);
         res.status(200).json({ message: 'Task updated successfully', task: updatedTask });
     } catch (error) {
         console.error('Error updating task:', error);
@@ -136,18 +181,17 @@ router.put('/task/:id', verifyToken, async (req, res) => {
 
 // Route to delete a task
 router.delete('/task/:id', verifyToken, async (req, res) => {
-    const { id } = req.params; // Extract task ID from request parameters
+    const { id } = req.params;
     console.log(`Request to delete task ID: ${id}`);
 
     try {
-        const deletedTask = await Task.findOneAndDelete({ _id: id, creator: req.userId }); // Match task by ID and user ID
-
+        const deletedTask = await Task.findOneAndDelete({ _id: id, creator: req.userId });
         if (!deletedTask) {
-            console.error(`Task ID ${id} not found or unauthorized for user ID: ${req.userId}`);
+            console.error(`Task not found or unauthorized: ${id}`);
             return res.status(404).json({ message: 'Task not found or unauthorized' });
         }
 
-        console.log(`Task ID ${id} deleted successfully for user ID: ${req.userId}`);
+        console.log(`Task ID ${id} deleted successfully.`);
         res.status(200).json({ message: 'Task deleted successfully', task: deletedTask });
     } catch (error) {
         console.error('Error deleting task:', error);
@@ -155,23 +199,56 @@ router.delete('/task/:id', verifyToken, async (req, res) => {
     }
 });
 
-// Route to search for tasks
-router.get('/search', verifyToken, async (req, res) => {
-    console.log(`Search request received for user ID: ${req.userId}`);
-    const { status, startDate, endDate, keyword } = req.query; // Extract query parameters
-
-    const query = { creator: req.userId }; // Match tasks created by the logged-in user
-    if (status) query.status = mongoose.Types.String(status); // Filter by status if provided
-    if (startDate) query.start = { $gte: new Date(startDate) }; // Filter by start date
-    if (endDate) query.finish = { $lte: new Date(endDate) }; // Filter by finish date
-    if (keyword) {
-        const sanitizedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // Escape regex special characters
-        query.task = { $regex: sanitizedKeyword, $options: 'i' }; // Case-insensitive search by task name
-    }
+// Route to delete a subtask
+router.delete('/task/:parentId/subtask/:subtaskId', verifyToken, async (req, res) => {
+    const { parentId, subtaskId } = req.params;
+    console.log(`Request to delete subtask ID: ${subtaskId} from parent task ID: ${parentId}`);
 
     try {
-        const tasks = await Task.find(query); // Perform the search query
-        console.log(`Search completed. Found ${tasks.length} tasks for user ID: ${req.userId}`);
+        const parentTask = await Task.findById(parentId);
+        if (!parentTask) {
+            console.error(`Parent task ID ${parentId} not found.`);
+            return res.status(404).json({ message: 'Parent task not found' });
+        }
+
+        const subtaskIndex = parentTask.subtasks.indexOf(subtaskId);
+        if (subtaskIndex === -1) {
+            console.error(`Subtask ID ${subtaskId} not found in parent task ID: ${parentId}`);
+            return res.status(404).json({ message: 'Subtask not found in parent task' });
+        }
+
+        parentTask.subtasks.splice(subtaskIndex, 1); // Remove the subtask reference
+        await parentTask.save();
+
+        const deletedSubtask = await Task.findOneAndDelete({ _id: subtaskId, creator: req.userId });
+        if (!deletedSubtask) {
+            console.error(`Subtask ID ${subtaskId} not found or unauthorized.`);
+            return res.status(404).json({ message: 'Subtask not found or unauthorized' });
+        }
+
+        console.log(`Subtask ID ${subtaskId} deleted successfully from parent task ID: ${parentId}`);
+        res.status(200).json({ message: 'Subtask deleted successfully', subtask: deletedSubtask });
+    } catch (error) {
+        console.error('Error deleting subtask:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// Route to search for tasks with priority filtering
+router.get('/search', verifyToken, async (req, res) => {
+    console.log(`Search request received for user ID: ${req.userId}`);
+    const { status, startDate, endDate, keyword, priority } = req.query;
+
+    const query = { creator: req.userId };
+    if (status) query.status = status;
+    if (priority) query.priority = priority;
+    if (startDate) query.start = { $gte: new Date(startDate) };
+    if (endDate) query.finish = { $lte: new Date(endDate) };
+    if (keyword) query.task = { $regex: keyword, $options: 'i' };
+
+    try {
+        const tasks = await Task.find(query).sort({ priority: -1, created_at: -1 });
+        console.log(`Search completed. Found ${tasks.length} tasks.`);
         res.status(200).json({ tasks });
     } catch (error) {
         console.error('Error searching tasks:', error);
@@ -180,3 +257,4 @@ router.get('/search', verifyToken, async (req, res) => {
 });
 
 module.exports = router;
+
