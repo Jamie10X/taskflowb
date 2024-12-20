@@ -19,19 +19,14 @@ if (!db || !sauce) {
     console.log('✅ Environment variables validated successfully.');
 }
 
-// Connect to MongoDB with retry mechanism
 const connectWithRetry = () => {
     console.log('Attempting to connect to MongoDB...');
-    mongoose.connect(db, {
-        dbName: 'TaskFlowDB', // Set the database name
-        useNewUrlParser: true, // Use new URL parser to handle connection strings
-        useUnifiedTopology: true, // Use unified topology engine for better connection handling
-    })
-        .then(() => console.log('✅ Connected to MongoDB TaskFlowDB')) // Log success message
+    mongoose.connect(db, { dbName: 'TaskFlowDB' })
+        .then(() => console.log('✅ Connected to MongoDB TaskFlowDB'))
         .catch(err => {
-            console.error('❌ MongoDB connection error:', err); // Log connection error
+            console.error('❌ MongoDB connection error:', err.message);
             console.log('Retrying connection in 5 seconds...');
-            setTimeout(connectWithRetry, 5000); // Retry connection after 5 seconds
+            setTimeout(connectWithRetry, 5000); // Retry after 5 seconds
         });
 };
 
@@ -52,17 +47,30 @@ app.use(morgan('dev')); // Log HTTP requests in development
 console.log('Configuring routes...');
 app.use('/auth', (req, res, next) => {
     console.log('Lazy-loading /auth route.');
-    import('./routes/auth') // Dynamically import the auth route
-        .then(module => module.default(req, res, next)) // Pass request and response to the route
-        .catch(next); // Pass errors to the global error handler
+    import('./routes/auth.js') // Explicit .js extension
+        .then(module => {
+            if (module.default) module.default(req, res, next); // Use default export
+            else module(req, res, next); // For non-default exports
+        })
+        .catch(err => {
+            console.error('Error loading /auth route:', err.message);
+            next(err);
+        });
 });
 
 app.use('/dashboard', (req, res, next) => {
     console.log('Lazy-loading /dashboard route.');
-    import('./routes/dashboard') // Dynamically import the dashboard route
-        .then(module => module.default(req, res, next)) // Pass request and response to the route
-        .catch(next); // Pass errors to the global error handler
+    import('./routes/dashboard.js') // Explicit .js extension
+        .then(module => {
+            if (module.default) module.default(req, res, next); // Use default export
+            else module(req, res, next); // For non-default exports
+        })
+        .catch(err => {
+            console.error('Error loading /dashboard route:', err.message);
+            next(err);
+        });
 });
+
 
 // Handle undefined routes
 app.use((req, res, next) => {

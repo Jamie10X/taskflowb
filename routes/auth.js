@@ -19,6 +19,7 @@ const authRateLimiter = rateLimit({
 // Route for user signup
 router.post('/signup', authRateLimiter, async (req, res) => {
     const { username, email, password } = req.body;
+
     console.log('Signup request received:', { username, email });
     try {
         // Check if the username or email already exists
@@ -28,14 +29,10 @@ router.post('/signup', authRateLimiter, async (req, res) => {
             return res.status(403).json({ message: 'Username or email already exists' });
         }
 
-        // Hash the password before saving to the database
-        const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS) || 10;
-        console.log('Hashing password with salt rounds:', saltRounds);
-        const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-        // Create a new user instance
-        const user = new User({ username, email, password: hashedPassword });
+        // Create user with plain password; pre('save') middleware will handle hashing
+        const user = new User({ username, email, password });
         await user.save();
+
         console.log('User created successfully:', username);
         res.status(200).json({ message: 'Signup successful' });
     } catch (error) {
@@ -49,39 +46,36 @@ router.post('/signin', authRateLimiter, async (req, res) => {
     const { email, password } = req.body;
     console.log('Signin request received:', { email });
     try {
-        // Validate that both email and password are provided
         if (!email || !password) {
             console.log('Signin failed: Email or password missing');
             return res.status(400).json({ message: 'Email and password are required' });
         }
 
-        // Find the user by email
+        // Find user by email
         const user = await User.findOne({ email });
         if (!user) {
             console.log('Signin failed: User not found');
             return res.status(403).json({ message: 'Invalid credentials' });
         }
 
-        // Compare the provided password with the stored hash
-        console.log('Comparing provided password with stored hash');
+        // Compare raw password with stored hash
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             console.log('Signin failed: Password mismatch');
             return res.status(403).json({ message: 'Invalid credentials' });
         }
 
-        // Generate a JWT token for the authenticated user
-        console.log('Password match successful, generating token');
+        // Generate JWT token
         const token = jwt.sign(
-            { id: user._id, username: user.username }, // Payload containing user info
-            jwtSecret, // Secret key
-            { expiresIn: '1h', audience: 'KanbanApp', issuer: 'KanbanApp.com' } // JWT options
+            { id: user._id, username: user.username },
+            process.env.sauce,
+            { expiresIn: '1h' }
         );
 
-        console.log('Token generated successfully:', token);
+        console.log('Signin successful, token generated for:', user.username);
         res.status(200).json({ token, username: user.username });
     } catch (error) {
-        console.error('Error during signin process:', error);
+        console.error('Error during signin:', error);
         res.status(500).json({ message: 'Internal server error' });
     }
 });

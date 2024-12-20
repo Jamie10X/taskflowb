@@ -199,6 +199,35 @@ router.delete('/task/:id', verifyToken, async (req, res) => {
     }
 });
 
+// Route to update a subtask
+router.put('/task/:parentId/subtask/:subtaskId', verifyToken, async (req, res) => {
+    const { parentId, subtaskId } = req.params;
+    const { error, value } = validateTask(req.body);
+
+    if (error) {
+        return res.status(400).json({ message: `Validation error: ${error.details[0].message}` });
+    }
+
+    try {
+        const parentTask = await Task.findById(parentId);
+        if (!parentTask) return res.status(404).json({ message: 'Parent task not found' });
+
+        const updatedSubtask = await Task.findOneAndUpdate(
+            { _id: subtaskId, creator: req.userId },
+            value,
+            { new: true }
+        );
+
+        if (!updatedSubtask) return res.status(404).json({ message: 'Subtask not found or unauthorized' });
+
+        res.status(200).json({ message: 'Subtask updated successfully', subtask: updatedSubtask });
+    } catch (error) {
+        console.error('Error updating subtask:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+ 
+
 // Route to delete a subtask
 router.delete('/task/:parentId/subtask/:subtaskId', verifyToken, async (req, res) => {
     const { parentId, subtaskId } = req.params;
